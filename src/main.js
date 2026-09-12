@@ -57,6 +57,7 @@ class ClassroomScene extends Phaser.Scene {
     this.qteCombo = 0
     this.comboLevel = 0
     this.qteTimer = null
+    this.teacherIsWatching = true
     this.selectedSnack = SNACKS[0]
     this.risk = 0
     this.streakLevel = 0
@@ -98,6 +99,7 @@ class ClassroomScene extends Phaser.Scene {
 
   faceBoard() {
     if (this.gameOver) return
+    this.teacherIsWatching = false
     this.teacher.setTexture('teacher-back').setAlpha(1).clearTint()
     this.setTeacherWriting(true)
 
@@ -126,6 +128,9 @@ class ClassroomScene extends Phaser.Scene {
 
   faceStudents() {
     if (this.gameOver) return
+    // Lock player input before changing the visual state, so a key event cannot
+    // sneak in between the teacher turning and the catch being resolved.
+    this.teacherIsWatching = true
     this.teacher.setTexture('teacher-front').setAlpha(1).clearTint()
     this.teacherTurnedAround()
     this.time.delayedCall(STUDENT_WATCH_TIME, this.faceBoard, [], this)
@@ -304,6 +309,7 @@ class ClassroomScene extends Phaser.Scene {
 
   setTeacherWriting(isWriting) {
     this.teacherIsWriting = isWriting
+    this.teacherIsWatching = !isWriting
     this.boardText.setText(isWriting ? 'Teacher is writing...' : 'Teacher stopped writing!')
     this.boardText.setColor(isWriting ? '#f6efd1' : '#f3a7a0')
     this.teacherStateText?.setText(isWriting ? 'Teacher AI: Writing' : 'Teacher AI: Watching')
@@ -313,7 +319,8 @@ class ClassroomScene extends Phaser.Scene {
 
   teacherTurnedAround() {
     if (this.gameOver) return
-    // Catch first so a held press cannot escape when the state changes.
+    this.teacherIsWatching = true
+    // Resolve a live QTE immediately. Inputs after this point are ignored.
     this.catchStudent(this.qteActive)
     this.setTeacherWriting(false)
     this.boardText.setText('Teacher is watching!')
@@ -352,7 +359,7 @@ class ClassroomScene extends Phaser.Scene {
   }
 
   submitQte(direction) {
-    if (!this.qteActive || !this.teacherIsWriting || this.gameOver) return
+    if (this.teacherIsWatching || !this.qteActive || !this.teacherIsWriting || this.gameOver) return
     if (direction !== this.qteDirection) {
       this.failQte('Wrong way!')
       return
