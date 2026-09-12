@@ -20,6 +20,19 @@ const QTE_DIRECTIONS = [
   { name: 'LEFT', symbol: '←' },
   { name: 'RIGHT', symbol: '→' },
 ]
+const QTE_KEY_BINDINGS = [
+  { key: 'UP', direction: 'UP' }, { key: 'W', direction: 'UP' },
+  { key: 'DOWN', direction: 'DOWN' }, { key: 'S', direction: 'DOWN' },
+  { key: 'LEFT', direction: 'LEFT' }, { key: 'A', direction: 'LEFT' },
+  { key: 'RIGHT', direction: 'RIGHT' }, { key: 'D', direction: 'RIGHT' },
+]
+const QTE_KEY_HINTS = { UP: 'W / ↑', DOWN: 'S / ↓', LEFT: 'A / ←', RIGHT: 'D / →' }
+const COMBO_LEVELS = [
+  { threshold: 1, title: 'TINY BITE', message: 'Mmm... stealthy!', bonus: 0, color: 0xd9903d },
+  { threshold: 4, title: 'CRUNCH CADET', message: 'So crunchy!', bonus: 10, color: 0x7fb85a },
+  { threshold: 8, title: 'UNBELIEVABLE!', message: 'Nobody saw that!', bonus: 25, color: 0xb84c3f },
+  { threshold: 14, title: 'SNACK LEGEND', message: 'I am unstoppable!', bonus: 60, color: 0x9b67bd },
+]
 const SNACKS = [
   { name: 'Cookie', detail: 'Balanced', multiplier: 1, riskRate: 12, color: 0xd9903d },
   { name: 'Chips', detail: 'High score · high risk', multiplier: 1.5, riskRate: 19, color: 0xe05a3e },
@@ -42,6 +55,7 @@ class ClassroomScene extends Phaser.Scene {
     this.qteActive = false
     this.qteDirection = null
     this.qteCombo = 0
+    this.comboLevel = 0
     this.qteTimer = null
     this.selectedSnack = SNACKS[0]
     this.risk = 0
@@ -65,8 +79,8 @@ class ClassroomScene extends Phaser.Scene {
 
     this.faceStudents()
 
-    this.qteKeyHandlers = QTE_DIRECTIONS.map(({ name }) => ({ name, handler: () => this.submitQte(name) }))
-    this.qteKeyHandlers.forEach(({ name, handler }) => this.input.keyboard.on(`keydown-${name}`, handler))
+    this.qteKeyHandlers = QTE_KEY_BINDINGS.map(({ key, direction }) => ({ key, handler: () => this.submitQte(direction) }))
+    this.qteKeyHandlers.forEach(({ key, handler }) => this.input.keyboard.on(`keydown-${key}`, handler))
   }
 
   drawClassroom() {
@@ -160,11 +174,11 @@ class ClassroomScene extends Phaser.Scene {
     this.statusText = this.add.text(400, 444, '', { fontFamily: 'Arial, sans-serif', fontSize: '20px', color: '#fff8df' }).setOrigin(0.5)
     this.qtePrompt = this.add.text(315, 186, '', {
       fontFamily: 'Arial, sans-serif', fontSize: '48px', fontStyle: 'bold', color: '#fff2c7', stroke: '#583426', strokeThickness: 5,
-    }).setOrigin(0.5).setVisible(false)
+    }).setOrigin(0.5).setDepth(12).setVisible(false)
     this.riskLabel = this.add.text(650, 57, 'RISK', { fontFamily: 'Arial, sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#fff2c7', stroke: '#583426', strokeThickness: 2 }).setOrigin(0.5)
     this.riskBack = this.add.rectangle(650, 76, 152, 13, 0x4a3029, 0.85)
     this.riskFill = this.add.rectangle(576, 76, 0, 9, 0xe54e45).setOrigin(0, 0.5)
-    this.hintText = this.add.text(400, 474, 'Choose a snack from the BAG, then follow arrows while the teacher writes.', { fontFamily: 'Arial, sans-serif', fontSize: '16px', color: '#fff8df' }).setOrigin(0.5)
+    this.hintText = this.add.text(400, 474, 'Follow QTEs with WASD, arrow keys, or the invisible screen edges.', { fontFamily: 'Arial, sans-serif', fontSize: '16px', color: '#fff8df' }).setOrigin(0.5)
     this.updateHearts()
     this.updateRisk()
   }
@@ -310,6 +324,7 @@ class ClassroomScene extends Phaser.Scene {
     if (this.gameOver || this.qteActive) return
     this.qteActive = true
     this.qteCombo = 0
+    this.comboLevel = 0
     this.eatStartedAt = this.time.now
     this.time.delayedCall(500, this.nextQte, [], this)
   }
@@ -332,7 +347,7 @@ class ClassroomScene extends Phaser.Scene {
     this.qteDirection = direction.name
     this.qtePrompt.setText(direction.symbol).setColor('#fff2c7').setVisible(true).setScale(0.65)
     this.tweens.add({ targets: this.qtePrompt, scale: 1, duration: 140, ease: 'Back.easeOut' })
-    this.statusText.setText(`Sneak QTE  •  Combo ${this.qteCombo}  •  press ${direction.name}`)
+    this.statusText.setText(`Sneak QTE  •  Combo ${this.qteCombo}  •  press ${QTE_KEY_HINTS[direction.name]}`)
     this.qteTimer = this.time.delayedCall(QTE_INTERVAL, () => this.failQte('Too slow!'))
   }
 
@@ -345,7 +360,6 @@ class ClassroomScene extends Phaser.Scene {
     this.qteTimer?.remove(false)
     this.qteTimer = null
     this.qteCombo += 1
-    this.streakLevel = Math.floor(this.qteCombo / 5)
     const gained = Math.max(1, Math.floor((3 + this.qteCombo ** 1.35) * this.selectedSnack.multiplier))
     this.score += gained
     this.risk = Math.max(0, this.risk - 3)
@@ -355,9 +369,10 @@ class ClassroomScene extends Phaser.Scene {
     this.tweens.add({ targets: this.student, angle: -5, duration: 90, yoyo: true, ease: 'Sine.easeInOut' })
     this.qtePrompt.setColor('#9ee176')
     this.statusText.setText(`Nice! +${gained}  •  Combo ${this.qteCombo}`)
-    if ([5, 10, 16].includes(this.qteCombo)) {
-      const milestone = this.qteCombo === 5 ? ['TASTY!', 10, 0xd9903d] : this.qteCombo === 10 ? ['UNBELIEVABLE!', 25, 0xb84c3f] : ['LEGENDARY!', 60, 0x9b67bd]
-      this.showStreakBubble(...milestone)
+    const level = this.getComboLevel(this.qteCombo)
+    if (level && level.threshold > this.comboLevel) {
+      this.comboLevel = level.threshold
+      this.showComboBubble(level)
     }
     this.time.delayedCall(250, this.nextQte, [], this)
   }
@@ -367,7 +382,7 @@ class ClassroomScene extends Phaser.Scene {
     this.qteTimer?.remove(false)
     this.qteTimer = null
     this.qteCombo = 0
-    this.streakLevel = 0
+    this.comboLevel = 0
     this.risk = Math.min(100, this.risk + 16)
     this.qtePrompt.setColor('#f06c5e')
     this.statusText.setText(`${message}  +16 RISK`)
@@ -379,17 +394,27 @@ class ClassroomScene extends Phaser.Scene {
     this.time.delayedCall(420, this.nextQte, [], this)
   }
 
-  showStreakBubble(label, bonus, color) {
-    const bubble = this.add.container(306, 195).setDepth(5).setScale(0.2).setAlpha(0)
+  getComboLevel(combo) {
+    return [...COMBO_LEVELS].reverse().find((level) => combo >= level.threshold)
+  }
+
+  showComboBubble(level) {
+    const bubble = this.add.container(168, 176).setDepth(8).setScale(0.2).setAlpha(0)
     const shape = this.add.graphics()
-    shape.fillStyle(0xfff2c7, 1).fillRoundedRect(-82, -23, 164, 45, 10)
-    shape.fillTriangle(-28, 20, -10, 20, -20, 34)
-    shape.lineStyle(3, color, 1).strokeRoundedRect(-82, -23, 164, 45, 10)
-    bubble.add([shape, this.add.text(0, 0, label, {
-      fontFamily: 'Arial, sans-serif', fontSize: '17px', fontStyle: 'bold', color,
-    }).setOrigin(0.5)])
-    this.score += bonus
-    this.scoreText.setText(`Snack Score ${this.score}`)
+    shape.fillStyle(0xfff2c7, 1).fillRoundedRect(-80, -30, 160, 60, 10)
+    shape.fillTriangle(28, 27, 46, 27, 39, 42)
+    shape.lineStyle(3, level.color, 1).strokeRoundedRect(-80, -30, 160, 60, 10)
+    const title = this.add.text(0, -11, level.title, {
+      fontFamily: 'Arial, sans-serif', fontSize: '15px', fontStyle: 'bold', color: `#${level.color.toString(16).padStart(6, '0')}`,
+    }).setOrigin(0.5)
+    const message = this.add.text(0, 10, level.message, {
+      fontFamily: 'Arial, sans-serif', fontSize: '13px', color: '#583426',
+    }).setOrigin(0.5)
+    bubble.add([shape, title, message])
+    if (level.bonus) {
+      this.score += level.bonus
+      this.scoreText.setText(`Snack Score ${this.score}`)
+    }
     this.tweens.add({ targets: bubble, scale: 1, alpha: 1, duration: 180, ease: 'Back.easeOut', yoyo: true, hold: 1250, onComplete: () => bubble.destroy() })
   }
 
@@ -434,7 +459,7 @@ class ClassroomScene extends Phaser.Scene {
   }
 
   shutdown() {
-    this.qteKeyHandlers?.forEach(({ name, handler }) => this.input.keyboard.off(`keydown-${name}`, handler))
+    this.qteKeyHandlers?.forEach(({ key, handler }) => this.input.keyboard.off(`keydown-${key}`, handler))
     this.events.off('teacher-writing', this.handleTeacherWriting)
     this.game.events.off('teacher-writing', this.handleTeacherWriting)
     this.events.off('student-caught', this.handleStudentCaught)
