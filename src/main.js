@@ -1,15 +1,31 @@
 import Phaser from 'phaser'
 import classroomBackground from './assets/cozy-classroom-pixel.png'
+import snackBagSprite from './assets/snack-bag-pixel.png'
 import studentSprite from './assets/student-sneak-pixel.png'
 import './style.css'
 
 const GAME_WIDTH = 800
 const GAME_HEIGHT = 500
+const STUDENT_WATCH_TIME = 5000
+const MIN_BOARD_TIME = 2000
+const MAX_BOARD_TIME = 6000
+const WARNING_TIME = 750
+const TEACHER_X = 610
+const TEACHER_Y = 255
+const TEACHER_SIZE = 190
+const SNACKS = [
+  { name: 'Cookie', detail: 'Balanced', multiplier: 1, riskRate: 12, color: 0xd9903d },
+  { name: 'Chips', detail: 'High score · high risk', multiplier: 1.5, riskRate: 19, color: 0xe05a3e },
+  { name: 'Gummies', detail: 'Low risk · lower score', multiplier: 0.75, riskRate: 7, color: 0x9b67bd },
+]
 
 class ClassroomScene extends Phaser.Scene {
   preload() {
     this.load.image('cozy-classroom', classroomBackground)
+    this.load.image('snack-bag', snackBagSprite)
     this.load.image('student-sneak', studentSprite)
+    this.load.image('teacher-front', 'assets/teacher/fem_teacher_front.png')
+    this.load.image('teacher-back', 'assets/teacher/fem_teacher_back.png')
   }
 
   create() {
@@ -17,29 +33,29 @@ class ClassroomScene extends Phaser.Scene {
     this.lives = 3
     this.gameOver = false
     this.eating = false
+    this.selectedSnack = SNACKS[0]
+    this.risk = 0
+    this.streakLevel = 0
+    this.achievedMilestones = new Set()
     this.eatStartedAt = 0
     this.teacherIsWriting = false
-    this.demoTeacherMode = true
     this.handlePointerDown = (pointer, gameObjects) => {
-      if (!gameObjects.length) this.startEating(pointer)
+      if (!this.snackSelection?.length && !this.isControlPointer(pointer) && !gameObjects?.length) this.startEating(pointer)
     }
     this.handleTeacherWriting = (isWriting) => {
-      this.demoTeacherMode = false
       this.setTeacherWriting(isWriting)
     }
     this.handleStudentCaught = () => this.catchStudent()
     this.handleTeacherTurnedAround = () => this.teacherTurnedAround()
 
     this.drawClassroom()
+    this.createTeacher()
     this.createStudent()
     this.createHud()
     this.createControls()
     this.registerTeacherBridge()
 
-    // The student is deliberately independent from the teacher implementation.
-    // Until the teacher branch is connected, this makes the interaction playable.
-    this.setTeacherWriting(true)
-    this.time.addEvent({ delay: 5000, loop: true, callback: this.toggleDemoTeacher, callbackScope: this })
+    this.faceStudents()
 
     this.input.on('pointerdown', this.handlePointerDown)
     this.input.on('pointerup', this.stopEating, this)
@@ -55,6 +71,50 @@ class ClassroomScene extends Phaser.Scene {
     this.boardText = this.add.text(550, 144, 'Teacher is writing...', {
       fontFamily: 'Arial, sans-serif', fontSize: '24px', color: '#f6efd1', stroke: '#1d4937', strokeThickness: 2,
     }).setOrigin(0.5)
+  }
+
+  createTeacher() {
+    this.teacher = this.add.image(TEACHER_X, TEACHER_Y, 'teacher-front').setDisplaySize(TEACHER_SIZE, TEACHER_SIZE)
+  }
+
+  faceBoard() {
+    if (this.gameOver) return
+    this.teacher.setTexture('teacher-back').setAlpha(1).clearTint()
+    this.setTeacherWriting(true)
+
+    const boardTime = Phaser.Math.Between(MIN_BOARD_TIME, MAX_BOARD_TIME)
+    this.time.delayedCall(boardTime - WARNING_TIME, this.warnStudents, [], this)
+  }
+
+  warnStudents() {
+    if (this.gameOver) return
+    this.boardText.setText('Teacher is about to turn!')
+    this.boardText.setColor('#f3d36c')
+    this.teacher.setTint(0xffc13c)
+    this.tweens.add({
+      targets: this.teacher,
+      alpha: 0.15,
+      x: TEACHER_X + 12,
+      duration: 75,
+      yoyo: true,
+      repeat: 4,
+      onComplete: () => {
+        this.teacher.setPosition(TEACHER_X, TEACHER_Y).setAlpha(1).clearTint()
+        this.faceStudents()
+      },
+    })
+  }
+
+  faceStudents() {
+    if (this.gameOver) return
+    this.teacher.setTexture('teacher-front').setAlpha(1).clearTint()
+    this.teacherTurnedAround()
+    this.time.delayedCall(STUDENT_WATCH_TIME, this.faceBoard, [], this)
+  }
+
+  isControlPointer(pointer) {
+    const inRightControls = pointer.x > 595 && pointer.y > 315
+    return inRightControls
   }
 
   createStudent() {
@@ -98,8 +158,18 @@ class ClassroomScene extends Phaser.Scene {
     this.add.text(31, 64, 'Lives', { fontFamily: 'Arial, sans-serif', fontSize: '22px', fontStyle: 'bold', color: '#8e332f', stroke: '#fff3d2', strokeThickness: 2 })
     this.heartsGraphic = this.add.graphics()
     this.statusText = this.add.text(400, 444, '', { fontFamily: 'Arial, sans-serif', fontSize: '20px', color: '#fff8df' }).setOrigin(0.5)
-    this.hintText = this.add.text(400, 474, 'Hold the screen to snack while the teacher writes!', { fontFamily: 'Arial, sans-serif', fontSize: '17px', color: '#fff8df' }).setOrigin(0.5)
+    this.riskLabel = this.add.text(650, 57, 'RISK', { fontFamily: 'Arial, sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#fff2c7', stroke: '#583426', strokeThickness: 2 }).setOrigin(0.5)
+    this.riskBack = this.add.rectangle(650, 76, 152, 13, 0x4a3029, 0.85)
+    this.riskFill = this.add.rectangle(576, 76, 0, 9, 0xe54e45).setOrigin(0, 0.5)
+    this.hintText = this.add.text(400, 474, 'Use the SNACK BAG to switch snacks during class.', { fontFamily: 'Arial, sans-serif', fontSize: '16px', color: '#fff8df' }).setOrigin(0.5)
     this.updateHearts()
+    this.updateRisk()
+  }
+
+  updateRisk() {
+    const progress = Phaser.Math.Clamp(this.risk / 100, 0, 1)
+    this.riskFill.width = 148 * progress
+    this.riskFill.fillColor = progress > 0.65 ? 0xe54e45 : 0xe59c41
   }
 
   updateHearts() {
@@ -118,15 +188,86 @@ class ClassroomScene extends Phaser.Scene {
   }
 
   createControls() {
-    const button = this.add.text(45, 99, 'Demo: Teacher Writing', {
-      fontFamily: 'Arial, sans-serif', fontSize: '17px', color: '#ffffff', backgroundColor: '#496d59', padding: { x: 12, y: 8 },
-    }).setInteractive({ useHandCursor: true })
-    button.on('pointerdown', (pointer) => {
-      pointer.event.stopPropagation()
-      this.demoTeacherMode = !this.demoTeacherMode
-      button.setText(this.demoTeacherMode ? 'Demo: Teacher Writing' : 'Demo: Teacher Paused')
-      this.setTeacherWriting(this.demoTeacherMode)
+    this.teacherStateText = this.add.text(45, 99, 'Teacher AI: Watching', {
+      fontFamily: 'Arial, sans-serif', fontSize: '17px', color: '#ffffff', backgroundColor: '#7b4741', padding: { x: 12, y: 8 },
     })
+
+    this.sneakButton = this.add.text(685, 423, 'COOKIE\nHOLD TO SNEAK', {
+      fontFamily: 'Arial, sans-serif', fontSize: '16px', fontStyle: 'bold', align: 'center', color: '#fff8df',
+      backgroundColor: '#b84c3f', padding: { x: 16, y: 9 },
+    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
+    this.sneakButton.on('pointerdown', (pointer) => {
+      pointer.event?.stopPropagation?.()
+      this.startEating()
+    })
+    this.sneakButton.on('pointerup', this.stopEating, this)
+    this.sneakButton.on('pointerout', this.stopEating, this)
+
+    this.add.circle(685, 355, 38, 0x5d426e, 0.92)
+    this.snackBagButton = this.add.image(685, 355, 'snack-bag').setDisplaySize(68, 68).setInteractive({ useHandCursor: true })
+    this.add.text(685, 398, 'BAG', { fontFamily: 'Arial, sans-serif', fontSize: '13px', fontStyle: 'bold', color: '#fff8df', stroke: '#583426', strokeThickness: 2 }).setOrigin(0.5)
+    this.snackBagButton.on('pointerdown', (pointer) => {
+      pointer.event?.stopPropagation?.()
+      if (this.gameOver) return
+      this.stopEating()
+      this.createSnackSelection()
+    })
+  }
+
+  createSnackSelection() {
+    if (this.snackSelection?.length) return
+    this.snackSelection = []
+    const add = (object) => {
+      object.setDepth(20)
+      this.snackSelection.push(object)
+      return object
+    }
+    add(this.add.rectangle(400, 250, 800, 500, 0x24170f, 0.75))
+    add(this.add.text(400, 145, 'OPEN SNACK BAG', {
+      fontFamily: 'Arial, sans-serif', fontSize: '34px', fontStyle: 'bold', color: '#fff2c7', stroke: '#6c3826', strokeThickness: 5,
+    }).setOrigin(0.5))
+    add(this.add.text(400, 185, 'Each snack changes your score and risk.', {
+      fontFamily: 'Arial, sans-serif', fontSize: '18px', color: '#fff2c7',
+    }).setOrigin(0.5))
+
+    SNACKS.forEach((snack, index) => {
+      const x = 210 + index * 190
+      const card = add(this.add.rectangle(x, 302, 170, 178, snack.color, 0.96).setInteractive({ useHandCursor: true }))
+      add(this.drawSnackIllustration(x, 280, snack.name))
+      add(this.add.text(x, 337, snack.name.toUpperCase(), { fontFamily: 'Arial, sans-serif', fontSize: '20px', fontStyle: 'bold', color: '#ffffff' }).setOrigin(0.5))
+      add(this.add.text(x, 367, `×${snack.multiplier} SCORE   •   ${snack.riskRate} RISK`, { fontFamily: 'Arial, sans-serif', fontSize: '12px', fontStyle: 'bold', align: 'center', color: '#fff8df' }).setOrigin(0.5))
+      card.on('pointerdown', () => this.selectSnack(snack))
+    })
+  }
+
+  drawSnackIllustration(x, y, snackName) {
+    const art = this.add.graphics()
+    if (snackName === 'Cookie') {
+      art.fillStyle(0x6e3f22).fillCircle(x, y, 39)
+      art.fillStyle(0xf2b54e).fillCircle(x, y, 34)
+      art.fillStyle(0x754225).fillCircle(x - 13, y - 10, 5).fillCircle(x + 13, y - 5, 5).fillCircle(x - 5, y + 15, 5).fillCircle(x + 16, y + 13, 4)
+    } else if (snackName === 'Chips') {
+      art.fillStyle(0x8b2d31).fillRoundedRect(x - 28, y - 39, 56, 78, 7)
+      art.fillStyle(0xf1c24f).fillRoundedRect(x - 24, y - 34, 48, 10, 3)
+      art.fillStyle(0xf6d766).fillCircle(x - 10, y - 1, 11).fillCircle(x + 10, y + 9, 11).fillCircle(x + 3, y - 12, 10)
+      art.lineStyle(3, 0xb64938).strokeRoundedRect(x - 28, y - 39, 56, 78, 7)
+    } else {
+      art.fillStyle(0xf1f0d8).fillRoundedRect(x - 39, y - 27, 78, 54, 18)
+      art.fillStyle(0xe76380).fillCircle(x - 17, y - 2, 13)
+      art.fillStyle(0x7fb85a).fillCircle(x + 1, y + 7, 13)
+      art.fillStyle(0x8c68bd).fillCircle(x + 19, y - 5, 13)
+      art.lineStyle(3, 0x754c8e).strokeRoundedRect(x - 39, y - 27, 78, 54, 18)
+    }
+    return art
+  }
+
+  selectSnack(snack) {
+    this.selectedSnack = snack
+    this.snackSelection.forEach((object) => object.destroy())
+    this.snackSelection = []
+    this.sneakButton.setText(`${snack.name.toUpperCase()}\nHOLD TO SNEAK`)
+    this.hintText.setText('Hold anywhere, the SNEAK button, or SPACE while the teacher writes!')
+    this.statusText.setText(`${snack.name} selected — score ×${snack.multiplier}, risk ${snack.riskRate}.`)
   }
 
   registerTeacherBridge() {
@@ -146,13 +287,8 @@ class ClassroomScene extends Phaser.Scene {
     this.teacherIsWriting = isWriting
     this.boardText.setText(isWriting ? 'Teacher is writing...' : 'Teacher stopped writing!')
     this.boardText.setColor(isWriting ? '#f6efd1' : '#f3a7a0')
+    this.teacherStateText?.setText(isWriting ? 'Teacher AI: Writing' : 'Teacher AI: Watching')
     if (!isWriting) this.stopEating()
-  }
-
-  toggleDemoTeacher() {
-    if (!this.demoTeacherMode) return
-    if (this.teacherIsWriting) this.teacherTurnedAround()
-    else this.setTeacherWriting(true)
   }
 
   teacherTurnedAround() {
@@ -170,6 +306,8 @@ class ClassroomScene extends Phaser.Scene {
     if (pointer?.gameObject) return
     this.eating = true
     this.eatStartedAt = this.time.now
+    this.streakLevel = 0
+    this.achievedMilestones.clear()
     this.crumbTimer.paused = false
     this.statusText.setText('Sneaking a snack... keep holding!')
     this.tweens.add({ targets: this.student, angle: -4, duration: 210, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' })
@@ -178,21 +316,69 @@ class ClassroomScene extends Phaser.Scene {
   stopEating() {
     if (!this.eating) return
     const seconds = (this.time.now - this.eatStartedAt) / 1000
-    // Convex curve: staying longer is progressively more valuable.
-    const gained = Math.max(1, Math.floor(4 * seconds + 3 * seconds ** 2))
+    // Convex curve plus the active streak multiplier.
+    const gained = Math.max(1, Math.floor((4 * seconds + 3 * seconds ** 2) * this.selectedSnack.multiplier * (1 + this.streakLevel * 0.25)))
     this.score += gained
     this.eating = false
     this.crumbTimer.paused = true
     this.tweens.killTweensOf(this.student)
     this.student.setAngle(0)
     this.scoreText.setText(`Snack Score ${this.score}`)
-    this.statusText.setText(`Snacked for ${seconds.toFixed(1)}s  +${gained} points`)
+    this.statusText.setText(`Snacked for ${seconds.toFixed(1)}s  +${gained} points  ×${(1 + this.streakLevel * 0.25).toFixed(2)}`)
+  }
+
+  showStreakBubble(label, bonus, color) {
+    const bubble = this.add.container(306, 195).setDepth(5).setScale(0.2).setAlpha(0)
+    const shape = this.add.graphics()
+    shape.fillStyle(0xfff2c7, 1).fillRoundedRect(-82, -23, 164, 45, 10)
+    shape.fillTriangle(-28, 20, -10, 20, -20, 34)
+    shape.lineStyle(3, color, 1).strokeRoundedRect(-82, -23, 164, 45, 10)
+    bubble.add([shape, this.add.text(0, 0, label, {
+      fontFamily: 'Arial, sans-serif', fontSize: '17px', fontStyle: 'bold', color,
+    }).setOrigin(0.5)])
+    this.score += bonus
+    this.scoreText.setText(`Snack Score ${this.score}`)
+    this.tweens.add({ targets: bubble, scale: 1, alpha: 1, duration: 180, ease: 'Back.easeOut', yoyo: true, hold: 1250, onComplete: () => bubble.destroy() })
+  }
+
+  update(_time, delta) {
+    if (this.gameOver) return
+
+    if (this.eating) {
+      this.risk += this.selectedSnack.riskRate * (delta / 1000)
+      const seconds = (this.time.now - this.eatStartedAt) / 1000
+      const milestones = [
+        { seconds: 2, label: 'TASTY!', bonus: 10, color: 0xd9903d },
+        { seconds: 5, label: 'UNBELIEVABLE!', bonus: 25, color: 0xb84c3f },
+        { seconds: 8, label: 'LEGENDARY!', bonus: 60, color: 0x9b67bd },
+      ]
+      milestones.forEach((milestone, index) => {
+        if (seconds >= milestone.seconds && !this.achievedMilestones.has(milestone.seconds)) {
+          this.achievedMilestones.add(milestone.seconds)
+          this.streakLevel = index + 1
+          this.showStreakBubble(milestone.label, milestone.bonus, milestone.color)
+        }
+      })
+      const next = milestones.find((milestone) => !this.achievedMilestones.has(milestone.seconds))
+      this.statusText.setText(next ? `Sneak streak ${seconds.toFixed(1)}s  •  ${next.label} in ${(next.seconds - seconds).toFixed(1)}s` : `LEGENDARY streak ${seconds.toFixed(1)}s  •  ×1.75 score`)
+      if (this.risk >= 100) {
+        this.risk = 100
+        this.updateRisk()
+        this.catchStudent()
+        this.risk = 35
+      }
+    } else {
+      this.risk = Math.max(0, this.risk - 13 * (delta / 1000))
+    }
+    this.updateRisk()
   }
 
   catchStudent() {
     if (this.gameOver || !this.eating) return
 
     this.stopEating()
+    this.risk = 35
+    this.updateRisk()
     this.lives -= 1
     this.updateHearts()
     this.statusText.setText(this.lives > 0 ? `Caught! ${this.lives} ${this.lives === 1 ? 'life' : 'lives'} left.` : 'Caught! No lives left.')
