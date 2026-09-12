@@ -128,8 +128,6 @@ class ClassroomScene extends Phaser.Scene {
 
   faceStudents() {
     if (this.gameOver) return
-    // Lock player input before changing the visual state, so a key event cannot
-    // sneak in between the teacher turning and the catch being resolved.
     this.teacherIsWatching = true
     this.teacher.setTexture('teacher-front').setAlpha(1).clearTint()
     this.teacherTurnedAround()
@@ -320,8 +318,6 @@ class ClassroomScene extends Phaser.Scene {
   teacherTurnedAround() {
     if (this.gameOver) return
     this.teacherIsWatching = true
-    // Resolve a live QTE immediately. Inputs after this point are ignored.
-    this.catchStudent(this.qteActive)
     this.setTeacherWriting(false)
     this.boardText.setText('Teacher is watching!')
     this.boardText.setColor('#f3a7a0')
@@ -359,7 +355,14 @@ class ClassroomScene extends Phaser.Scene {
   }
 
   submitQte(direction) {
-    if (this.teacherIsWatching || !this.qteActive || !this.teacherIsWriting || this.gameOver) return
+    if (this.gameOver) return
+    // In Watching mode the student should stay still. Any directional input is
+    // an obvious movement, so the teacher catches them at that moment.
+    if (this.teacherIsWatching) {
+      this.catchStudent(true)
+      return
+    }
+    if (!this.qteActive || !this.teacherIsWriting) return
     if (direction !== this.qteDirection) {
       this.failQte('Wrong way!')
       return
