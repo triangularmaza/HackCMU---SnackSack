@@ -13,6 +13,13 @@ const WARNING_TIME = 750
 const TEACHER_X = 610
 const TEACHER_Y = 255
 const TEACHER_SIZE = 190
+const QTE_INTERVAL = 1050
+const QTE_DIRECTIONS = [
+  { name: 'UP', symbol: '↑' },
+  { name: 'DOWN', symbol: '↓' },
+  { name: 'LEFT', symbol: '←' },
+  { name: 'RIGHT', symbol: '→' },
+]
 const SNACKS = [
   { name: 'Cookie', detail: 'Balanced', multiplier: 1, riskRate: 12, color: 0xd9903d },
   { name: 'Chips', detail: 'High score · high risk', multiplier: 1.5, riskRate: 19, color: 0xe05a3e },
@@ -32,20 +39,20 @@ class ClassroomScene extends Phaser.Scene {
     this.score = 0
     this.lives = 3
     this.gameOver = false
-    this.eating = false
+    this.qteActive = false
+    this.qteDirection = null
+    this.qteCombo = 0
+    this.qteTimer = null
     this.selectedSnack = SNACKS[0]
     this.risk = 0
     this.streakLevel = 0
     this.achievedMilestones = new Set()
     this.eatStartedAt = 0
     this.teacherIsWriting = false
-    this.handlePointerDown = (pointer, gameObjects) => {
-      if (!this.snackSelection?.length && !this.isControlPointer(pointer) && !gameObjects?.length) this.startEating(pointer)
-    }
     this.handleTeacherWriting = (isWriting) => {
       this.setTeacherWriting(isWriting)
     }
-    this.handleStudentCaught = () => this.catchStudent()
+    this.handleStudentCaught = () => this.catchStudent(true)
     this.handleTeacherTurnedAround = () => this.teacherTurnedAround()
 
     this.drawClassroom()
@@ -53,15 +60,13 @@ class ClassroomScene extends Phaser.Scene {
     this.createStudent()
     this.createHud()
     this.createControls()
+    this.createInvisibleDirectionZones()
     this.registerTeacherBridge()
 
     this.faceStudents()
 
-    this.input.on('pointerdown', this.handlePointerDown)
-    this.input.on('pointerup', this.stopEating, this)
-    this.input.on('pointerupoutside', this.stopEating, this)
-    this.input.keyboard.on('keydown-SPACE', this.startEating, this)
-    this.input.keyboard.on('keyup-SPACE', this.stopEating, this)
+    this.qteKeyHandlers = QTE_DIRECTIONS.map(({ name }) => ({ name, handler: () => this.submitQte(name) }))
+    this.qteKeyHandlers.forEach(({ name, handler }) => this.input.keyboard.on(`keydown-${name}`, handler))
   }
 
   drawClassroom() {
@@ -112,11 +117,6 @@ class ClassroomScene extends Phaser.Scene {
     this.time.delayedCall(STUDENT_WATCH_TIME, this.faceBoard, [], this)
   }
 
-  isControlPointer(pointer) {
-    const inRightControls = pointer.x > 595 && pointer.y > 315
-    return inRightControls
-  }
-
   createStudent() {
     this.student = this.add.image(225, 292, 'student-sneak').setDisplaySize(205, 205)
     this.student.setOrigin(0.5, 0.56)
@@ -158,10 +158,13 @@ class ClassroomScene extends Phaser.Scene {
     this.add.text(31, 64, 'Lives', { fontFamily: 'Arial, sans-serif', fontSize: '22px', fontStyle: 'bold', color: '#8e332f', stroke: '#fff3d2', strokeThickness: 2 })
     this.heartsGraphic = this.add.graphics()
     this.statusText = this.add.text(400, 444, '', { fontFamily: 'Arial, sans-serif', fontSize: '20px', color: '#fff8df' }).setOrigin(0.5)
+    this.qtePrompt = this.add.text(315, 186, '', {
+      fontFamily: 'Arial, sans-serif', fontSize: '48px', fontStyle: 'bold', color: '#fff2c7', stroke: '#583426', strokeThickness: 5,
+    }).setOrigin(0.5).setVisible(false)
     this.riskLabel = this.add.text(650, 57, 'RISK', { fontFamily: 'Arial, sans-serif', fontSize: '14px', fontStyle: 'bold', color: '#fff2c7', stroke: '#583426', strokeThickness: 2 }).setOrigin(0.5)
     this.riskBack = this.add.rectangle(650, 76, 152, 13, 0x4a3029, 0.85)
     this.riskFill = this.add.rectangle(576, 76, 0, 9, 0xe54e45).setOrigin(0, 0.5)
-    this.hintText = this.add.text(400, 474, 'Use the SNACK BAG to switch snacks during class.', { fontFamily: 'Arial, sans-serif', fontSize: '16px', color: '#fff8df' }).setOrigin(0.5)
+    this.hintText = this.add.text(400, 474, 'Choose a snack from the BAG, then follow arrows while the teacher writes.', { fontFamily: 'Arial, sans-serif', fontSize: '16px', color: '#fff8df' }).setOrigin(0.5)
     this.updateHearts()
     this.updateRisk()
   }
@@ -192,25 +195,28 @@ class ClassroomScene extends Phaser.Scene {
       fontFamily: 'Arial, sans-serif', fontSize: '17px', color: '#ffffff', backgroundColor: '#7b4741', padding: { x: 12, y: 8 },
     })
 
-    this.sneakButton = this.add.text(685, 423, 'COOKIE\nHOLD TO SNEAK', {
-      fontFamily: 'Arial, sans-serif', fontSize: '16px', fontStyle: 'bold', align: 'center', color: '#fff8df',
-      backgroundColor: '#b84c3f', padding: { x: 16, y: 9 },
-    }).setOrigin(0.5).setInteractive({ useHandCursor: true })
-    this.sneakButton.on('pointerdown', (pointer) => {
-      pointer.event?.stopPropagation?.()
-      this.startEating()
-    })
-    this.sneakButton.on('pointerup', this.stopEating, this)
-    this.sneakButton.on('pointerout', this.stopEating, this)
-
-    this.add.circle(685, 355, 38, 0x5d426e, 0.92)
-    this.snackBagButton = this.add.image(685, 355, 'snack-bag').setDisplaySize(68, 68).setInteractive({ useHandCursor: true })
-    this.add.text(685, 398, 'BAG', { fontFamily: 'Arial, sans-serif', fontSize: '13px', fontStyle: 'bold', color: '#fff8df', stroke: '#583426', strokeThickness: 2 }).setOrigin(0.5)
+    this.add.circle(685, 385, 38, 0x5d426e, 0.92)
+    this.snackBagButton = this.add.image(685, 385, 'snack-bag').setDisplaySize(68, 68).setInteractive({ useHandCursor: true })
+    this.add.text(685, 428, 'BAG', { fontFamily: 'Arial, sans-serif', fontSize: '13px', fontStyle: 'bold', color: '#fff8df', stroke: '#583426', strokeThickness: 2 }).setOrigin(0.5)
     this.snackBagButton.on('pointerdown', (pointer) => {
       pointer.event?.stopPropagation?.()
       if (this.gameOver) return
-      this.stopEating()
+      this.stopQte()
       this.createSnackSelection()
+    })
+  }
+
+  createInvisibleDirectionZones() {
+    const zones = [
+      ['UP', 400, 112, 210, 92],
+      ['DOWN', 400, 450, 210, 88],
+      ['LEFT', 78, 285, 156, 178],
+      ['RIGHT', 730, 270, 120, 140],
+    ]
+    zones.forEach(([direction, x, y, width, height]) => {
+      const zone = this.add.zone(x, y, width, height).setInteractive({ useHandCursor: true })
+      zone.setAlpha(0.001)
+      zone.on('pointerdown', () => this.submitQte(direction))
     })
   }
 
@@ -265,8 +271,7 @@ class ClassroomScene extends Phaser.Scene {
     this.selectedSnack = snack
     this.snackSelection.forEach((object) => object.destroy())
     this.snackSelection = []
-    this.sneakButton.setText(`${snack.name.toUpperCase()}\nHOLD TO SNEAK`)
-    this.hintText.setText('Hold anywhere, the SNEAK button, or SPACE while the teacher writes!')
+    this.hintText.setText('Follow the arrow: touch an invisible screen edge or use arrow keys.')
     this.statusText.setText(`${snack.name} selected — score ×${snack.multiplier}, risk ${snack.riskRate}.`)
   }
 
@@ -288,43 +293,90 @@ class ClassroomScene extends Phaser.Scene {
     this.boardText.setText(isWriting ? 'Teacher is writing...' : 'Teacher stopped writing!')
     this.boardText.setColor(isWriting ? '#f6efd1' : '#f3a7a0')
     this.teacherStateText?.setText(isWriting ? 'Teacher AI: Writing' : 'Teacher AI: Watching')
-    if (!isWriting) this.stopEating()
+    if (isWriting) this.startQte()
+    else this.stopQte()
   }
 
   teacherTurnedAround() {
     if (this.gameOver) return
     // Catch first so a held press cannot escape when the state changes.
-    this.catchStudent()
+    this.catchStudent(this.qteActive)
     this.setTeacherWriting(false)
     this.boardText.setText('Teacher is watching!')
     this.boardText.setColor('#f3a7a0')
   }
 
-  startEating(pointer) {
-    if (this.gameOver || this.eating || !this.teacherIsWriting) return
-    // Do not turn a click on the UI into eating.
-    if (pointer?.gameObject) return
-    this.eating = true
+  startQte() {
+    if (this.gameOver || this.qteActive) return
+    this.qteActive = true
+    this.qteCombo = 0
     this.eatStartedAt = this.time.now
-    this.streakLevel = 0
-    this.achievedMilestones.clear()
-    this.crumbTimer.paused = false
-    this.statusText.setText('Sneaking a snack... keep holding!')
-    this.tweens.add({ targets: this.student, angle: -4, duration: 210, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' })
+    this.time.delayedCall(500, this.nextQte, [], this)
   }
 
-  stopEating() {
-    if (!this.eating) return
-    const seconds = (this.time.now - this.eatStartedAt) / 1000
-    // Convex curve plus the active streak multiplier.
-    const gained = Math.max(1, Math.floor((4 * seconds + 3 * seconds ** 2) * this.selectedSnack.multiplier * (1 + this.streakLevel * 0.25)))
-    this.score += gained
-    this.eating = false
-    this.crumbTimer.paused = true
+  stopQte() {
+    this.qteActive = false
+    this.qteDirection = null
+    this.qteTimer?.remove(false)
+    this.qteTimer = null
+    this.qtePrompt?.setVisible(false)
+    if (this.crumbTimer) this.crumbTimer.paused = true
     this.tweens.killTweensOf(this.student)
-    this.student.setAngle(0)
+    this.student?.setAngle(0)
+  }
+
+  nextQte() {
+    if (!this.qteActive || !this.teacherIsWriting || this.gameOver) return
+    const choices = QTE_DIRECTIONS.filter(({ name }) => name !== this.qteDirection)
+    const direction = Phaser.Utils.Array.GetRandom(choices)
+    this.qteDirection = direction.name
+    this.qtePrompt.setText(direction.symbol).setColor('#fff2c7').setVisible(true).setScale(0.65)
+    this.tweens.add({ targets: this.qtePrompt, scale: 1, duration: 140, ease: 'Back.easeOut' })
+    this.statusText.setText(`Sneak QTE  •  Combo ${this.qteCombo}  •  press ${direction.name}`)
+    this.qteTimer = this.time.delayedCall(QTE_INTERVAL, () => this.failQte('Too slow!'))
+  }
+
+  submitQte(direction) {
+    if (!this.qteActive || !this.teacherIsWriting || this.gameOver) return
+    if (direction !== this.qteDirection) {
+      this.failQte('Wrong way!')
+      return
+    }
+    this.qteTimer?.remove(false)
+    this.qteTimer = null
+    this.qteCombo += 1
+    this.streakLevel = Math.floor(this.qteCombo / 5)
+    const gained = Math.max(1, Math.floor((3 + this.qteCombo ** 1.35) * this.selectedSnack.multiplier))
+    this.score += gained
+    this.risk = Math.max(0, this.risk - 3)
     this.scoreText.setText(`Snack Score ${this.score}`)
-    this.statusText.setText(`Snacked for ${seconds.toFixed(1)}s  +${gained} points  ×${(1 + this.streakLevel * 0.25).toFixed(2)}`)
+    this.crumbTimer.paused = false
+    this.time.delayedCall(160, () => { if (this.crumbTimer) this.crumbTimer.paused = true })
+    this.tweens.add({ targets: this.student, angle: -5, duration: 90, yoyo: true, ease: 'Sine.easeInOut' })
+    this.qtePrompt.setColor('#9ee176')
+    this.statusText.setText(`Nice! +${gained}  •  Combo ${this.qteCombo}`)
+    if ([5, 10, 16].includes(this.qteCombo)) {
+      const milestone = this.qteCombo === 5 ? ['TASTY!', 10, 0xd9903d] : this.qteCombo === 10 ? ['UNBELIEVABLE!', 25, 0xb84c3f] : ['LEGENDARY!', 60, 0x9b67bd]
+      this.showStreakBubble(...milestone)
+    }
+    this.time.delayedCall(250, this.nextQte, [], this)
+  }
+
+  failQte(message) {
+    if (!this.qteActive || this.gameOver) return
+    this.qteTimer?.remove(false)
+    this.qteTimer = null
+    this.qteCombo = 0
+    this.streakLevel = 0
+    this.risk = Math.min(100, this.risk + 16)
+    this.qtePrompt.setColor('#f06c5e')
+    this.statusText.setText(`${message}  +16 RISK`)
+    this.cameras.main.shake(75, 0.003)
+    if (this.risk >= 100) {
+      this.catchStudent(true)
+      return
+    }
+    this.time.delayedCall(420, this.nextQte, [], this)
   }
 
   showStreakBubble(label, bonus, color) {
@@ -343,40 +395,16 @@ class ClassroomScene extends Phaser.Scene {
 
   update(_time, delta) {
     if (this.gameOver) return
-
-    if (this.eating) {
-      this.risk += this.selectedSnack.riskRate * (delta / 1000)
-      const seconds = (this.time.now - this.eatStartedAt) / 1000
-      const milestones = [
-        { seconds: 2, label: 'TASTY!', bonus: 10, color: 0xd9903d },
-        { seconds: 5, label: 'UNBELIEVABLE!', bonus: 25, color: 0xb84c3f },
-        { seconds: 8, label: 'LEGENDARY!', bonus: 60, color: 0x9b67bd },
-      ]
-      milestones.forEach((milestone, index) => {
-        if (seconds >= milestone.seconds && !this.achievedMilestones.has(milestone.seconds)) {
-          this.achievedMilestones.add(milestone.seconds)
-          this.streakLevel = index + 1
-          this.showStreakBubble(milestone.label, milestone.bonus, milestone.color)
-        }
-      })
-      const next = milestones.find((milestone) => !this.achievedMilestones.has(milestone.seconds))
-      this.statusText.setText(next ? `Sneak streak ${seconds.toFixed(1)}s  •  ${next.label} in ${(next.seconds - seconds).toFixed(1)}s` : `LEGENDARY streak ${seconds.toFixed(1)}s  •  ×1.75 score`)
-      if (this.risk >= 100) {
-        this.risk = 100
-        this.updateRisk()
-        this.catchStudent()
-        this.risk = 35
-      }
-    } else {
+    if (!this.qteActive) {
       this.risk = Math.max(0, this.risk - 13 * (delta / 1000))
     }
     this.updateRisk()
   }
 
-  catchStudent() {
-    if (this.gameOver || !this.eating) return
+  catchStudent(force = false) {
+    if (this.gameOver || (!this.qteActive && !force)) return
 
-    this.stopEating()
+    this.stopQte()
     this.risk = 35
     this.updateRisk()
     this.lives -= 1
@@ -389,7 +417,7 @@ class ClassroomScene extends Phaser.Scene {
 
   finishGame() {
     this.gameOver = true
-    this.crumbTimer.paused = true
+    this.stopQte()
     this.teacherIsWriting = false
     this.boardText.setText('Class is over!')
     this.hintText.setVisible(false)
@@ -406,11 +434,7 @@ class ClassroomScene extends Phaser.Scene {
   }
 
   shutdown() {
-    this.input.off('pointerdown', this.handlePointerDown)
-    this.input.off('pointerup', this.stopEating, this)
-    this.input.off('pointerupoutside', this.stopEating, this)
-    this.input.keyboard.off('keydown-SPACE', this.startEating, this)
-    this.input.keyboard.off('keyup-SPACE', this.stopEating, this)
+    this.qteKeyHandlers?.forEach(({ name, handler }) => this.input.keyboard.off(`keydown-${name}`, handler))
     this.events.off('teacher-writing', this.handleTeacherWriting)
     this.game.events.off('teacher-writing', this.handleTeacherWriting)
     this.events.off('student-caught', this.handleStudentCaught)
