@@ -6,14 +6,29 @@ import './style.css'
 
 const GAME_WIDTH = 800
 const GAME_HEIGHT = 500
-const STUDENT_WATCH_TIME = 5000
+const MIN_STUDENT_WATCH_TIME = 2000
+const MAX_STUDENT_WATCH_TIME = 6000
 const MIN_BOARD_TIME = 2000
 const MAX_BOARD_TIME = 6000
-const WARNING_TIME = 750
+const HALF_TURN_TIME = 750
 const TEACHER_X = 610
 const TEACHER_Y = 255
 const TEACHER_SIZE = 190
 const QTE_INTERVAL = 1050
+const MIN_QTE_INTERVAL = 450
+const QTE_SPEED_GAIN_PER_MINUTE = 0.08
+const MATH_QUESTION_CHANCE = 0.25
+const MIN_MATH_QUESTION_SCORE = 300
+const MATH_SCORE_DRAIN_INTERVAL = 1000
+const MATH_SCORE_DRAIN_AMOUNT = 10
+const MATH_SCORE_DRAIN_INCREASE = 2
+
+function createMathQuestion() {
+  const a = Phaser.Math.Between(0, 999)
+  const b = Phaser.Math.Between(0, 999)
+  const addition = Phaser.Math.Between(0, 1) === 1
+  return { prompt: `${a} ${addition ? '+' : '−'} ${b} = ?`, answer: addition ? a + b : a - b }
+}
 const QTE_DIRECTIONS = [
   { name: 'UP', symbol: '↑' },
   { name: 'DOWN', symbol: '↓' },
@@ -45,13 +60,17 @@ class ClassroomScene extends Phaser.Scene {
     this.load.image('snack-bag', snackBagSprite)
     this.load.image('student-sneak', studentSprite)
     this.load.image('teacher-front', 'assets/teacher/fem_teacher_front.png')
+    this.load.image('teacher-angry', 'assets/teacher/fem_teacher_angry.png')
     this.load.image('teacher-back', 'assets/teacher/fem_teacher_back.png')
+    this.load.image('teacher-turning', 'assets/teacher/fem_teacher_turning.png')
   }
 
   create() {
     this.score = 0
     this.lives = 3
     this.gameOver = false
+    this.roundElapsed = 0
+    this.mathQuestion = null
     this.qteActive = false
     this.qteDirection = null
     this.qteCombo = 0
@@ -82,6 +101,17 @@ class ClassroomScene extends Phaser.Scene {
 
     this.qteKeyHandlers = QTE_KEY_BINDINGS.map(({ key, direction }) => ({ key, handler: () => this.submitQte(direction) }))
     this.qteKeyHandlers.forEach(({ key, handler }) => this.input.keyboard.on(`keydown-${key}`, handler))
+    this.mathKeyHandler = (event) => {
+      if (!this.mathQuestion || event.repeat) return
+      if (/^[0-9-]$/.test(event.key) || ['Backspace', 'Enter'].includes(event.key)) {
+        event.preventDefault()
+        this.enterMathKey(event.key)
+      }
+    }
+    this.input.keyboard.on('keydown', this.mathKeyHandler)
+    this.events.once('shutdown', () => {
+      this.input.keyboard.off('keydown', this.mathKeyHandler)
+    })
   }
 
   drawClassroom() {
@@ -104,25 +134,20 @@ class ClassroomScene extends Phaser.Scene {
     this.setTeacherWriting(true)
 
     const boardTime = Phaser.Math.Between(MIN_BOARD_TIME, MAX_BOARD_TIME)
-    this.time.delayedCall(boardTime - WARNING_TIME, this.warnStudents, [], this)
+    this.time.delayedCall(boardTime, this.turnHalfway, [], this)
   }
 
-  warnStudents() {
+  turnHalfway() {
     if (this.gameOver) return
-    this.boardText.setText('Teacher is about to turn!')
+    // Keep the eating window open until she fully faces the student.
+    this.teacherIsWatching = false
+    this.teacher.setTexture('teacher-turning').setAlpha(1).clearTint()
+    this.boardText.setText('Teacher is turning...')
     this.boardText.setColor('#f3d36c')
-    this.teacher.setTint(0xffc13c)
-    this.tweens.add({
-      targets: this.teacher,
-      alpha: 0.15,
-      x: TEACHER_X + 12,
-      duration: 75,
-      yoyo: true,
-      repeat: 4,
-      onComplete: () => {
-        this.teacher.setPosition(TEACHER_X, TEACHER_Y).setAlpha(1).clearTint()
-        this.faceStudents()
-      },
+    this.time.delayedCall(HALF_TURN_TIME, () => {
+      if (this.gameOver) return
+      if (Phaser.Math.Between(0, 1) === 1) this.faceStudents()
+      else this.faceBoard()
     })
   }
 
@@ -131,7 +156,83 @@ class ClassroomScene extends Phaser.Scene {
     this.teacherIsWatching = true
     this.teacher.setTexture('teacher-front').setAlpha(1).clearTint()
     this.teacherTurnedAround()
-    this.time.delayedCall(STUDENT_WATCH_TIME, this.faceBoard, [], this)
+    if (this.score >= MIN_MATH_QUESTION_SCORE && Phaser.Math.FloatBetween(0, 1) < MATH_QUESTION_CHANCE) {
+      this.askMathQuestion()
+      return
+    }
+    this.scheduleTeacherReturn()
+  }
+
+  scheduleTeacherReturn() {
+    const watchTime = Phaser.Math.Between(MIN_STUDENT_WATCH_TIME, MAX_STUDENT_WATCH_TIME)
+    this.time.delayedCall(watchTime, this.faceBoard, [], this)
+  }
+
+  askMathQuestion() {
+    this.mathQuestion = createMathQuestion()
+    this.mathAnswer = ''
+    this.mathDrainElapsed = 0
+    this.mathDrainRate = MATH_SCORE_DRAIN_AMOUNT
+    this.mathOverlay = this.add.container(0, 0).setDepth(30)
+    const add = (object) => { this.mathOverlay.add(object); return object }
+    const label = (x, y, text, size = 22) => add(this.add.text(x, y, text, {
+      fontFamily: 'Arial, sans-serif', fontSize: `${size}px`, color: '#fff2c7',
+    }).setOrigin(0.5))
+    add(this.add.rectangle(400, 250, 800, 500, 0x24170f, 0.92).setInteractive())
+    label(400, 45, 'A quick question for you!', 28)
+    label(400, 90, this.mathQuestion.prompt, 34)
+    this.mathAnswerText = label(400, 137, 'Answer: _', 28)
+    this.mathFeedback = label(400, 179, 'Type your answer or use the number pad.', 17)
+    const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '-', '0', 'Backspace']
+    keys.forEach((key, index) => {
+      const x = 300 + (index % 3) * 100
+      const y = 227 + Math.floor(index / 3) * 51
+      add(this.add.rectangle(x, y, 90, 43, 0x7b4741).setInteractive({ useHandCursor: true }))
+        .on('pointerdown', () => this.enterMathKey(key))
+      label(x, y, key === 'Backspace' ? 'DEL' : key)
+    })
+    add(this.add.rectangle(400, 441, 290, 48, 0x4c7851).setInteractive({ useHandCursor: true }))
+      .on('pointerdown', () => this.enterMathKey('Enter'))
+    label(400, 441, 'Answer ↵')
+    this.mathStatsText = label(400, 482, `Score: ${this.score} • Lives: ${this.lives} • −${MATH_SCORE_DRAIN_AMOUNT} points/sec • Wrong answer: −1 life`, 16)
+  }
+
+  enterMathKey(key) {
+    if (!this.mathQuestion || this.gameOver) return
+    if (key === 'Enter') {
+      if (!/^-?\d+$/.test(this.mathAnswer)) {
+        this.mathFeedback.setText('Enter a number first.')
+        return
+      }
+      if (Number(this.mathAnswer) !== this.mathQuestion.answer) {
+        this.lives = Math.max(0, this.lives - 1)
+        this.updateHearts()
+        this.cameras.main.shake(180, 0.008)
+        if (this.lives === 0) {
+          this.finishGame()
+          return
+        }
+        this.updateMathStats()
+        this.mathFeedback.setText('Wrong answer! −1 life. Try again.')
+        this.mathAnswer = ''
+        this.mathAnswerText.setText('Answer: _')
+        return
+      }
+      this.mathOverlay.destroy()
+      this.mathOverlay = null
+      this.mathQuestion = null
+      this.statusText.setText('Correct! Now keep still while she watches.')
+      this.scheduleTeacherReturn()
+      return
+    }
+    if (key === 'Backspace') this.mathAnswer = this.mathAnswer.slice(0, -1)
+    else if (key === '-') this.mathAnswer = this.mathAnswer.startsWith('-') ? this.mathAnswer.slice(1) : `-${this.mathAnswer}`
+    else if (/^\d$/.test(key) && this.mathAnswer.replace('-', '').length < 4) this.mathAnswer += key
+    this.mathAnswerText.setText(`Answer: ${this.mathAnswer || '_'}`)
+  }
+
+  updateMathStats() {
+    this.mathStatsText.setText(`Score: ${this.score} • Lives: ${this.lives} • −${this.mathDrainRate} points/sec • Wrong answer: −1 life`)
   }
 
   createStudent() {
@@ -170,8 +271,14 @@ class ClassroomScene extends Phaser.Scene {
   }
 
   createHud() {
-    this.add.text(30, 25, 'SnackSack', { fontFamily: 'Arial, sans-serif', fontSize: '30px', fontStyle: 'bold', color: '#513521' })
-    this.scoreText = this.add.text(770, 26, 'Snack Score 0', { fontFamily: 'Arial, sans-serif', fontSize: '25px', fontStyle: 'bold', color: '#513521' }).setOrigin(1, 0)
+    this.add.text(30, 25, 'Eat-In-Klass', {
+      fontFamily: 'Arial, sans-serif', fontSize: '30px', fontStyle: 'bold',
+      color: '#ffdc78', stroke: '#35251e', strokeThickness: 5,
+      shadow: { offsetX: 3, offsetY: 4, color: '#201a17', blur: 4, stroke: true, fill: true },
+    })
+    this.add.rectangle(400, 52, 230, 84, 0x35251e, 0.96).setStrokeStyle(3, 0xffd36b)
+    this.add.text(400, 27, 'SCORE', { fontFamily: 'Arial, sans-serif', fontSize: '16px', fontStyle: 'bold', color: '#fff2c7', letterSpacing: 3 }).setOrigin(0.5)
+    this.scoreText = this.add.text(400, 62, '0', { fontFamily: 'Arial, sans-serif', fontSize: '44px', fontStyle: 'bold', color: '#ffdc78', stroke: '#201a17', strokeThickness: 3 }).setOrigin(0.5)
     this.add.text(31, 64, 'Lives', { fontFamily: 'Arial, sans-serif', fontSize: '22px', fontStyle: 'bold', color: '#8e332f', stroke: '#fff3d2', strokeThickness: 2 })
     this.heartsGraphic = this.add.graphics()
     this.statusText = this.add.text(400, 444, '', { fontFamily: 'Arial, sans-serif', fontSize: '20px', color: '#fff8df' }).setOrigin(0.5)
@@ -208,16 +315,12 @@ class ClassroomScene extends Phaser.Scene {
   }
 
   createControls() {
-    this.teacherStateText = this.add.text(45, 99, 'Teacher AI: Watching', {
-      fontFamily: 'Arial, sans-serif', fontSize: '17px', color: '#ffffff', backgroundColor: '#7b4741', padding: { x: 12, y: 8 },
-    })
-
     this.add.circle(685, 385, 38, 0x5d426e, 0.92)
     this.snackBagButton = this.add.image(685, 385, 'snack-bag').setDisplaySize(68, 68).setInteractive({ useHandCursor: true })
     this.add.text(685, 428, 'BAG', { fontFamily: 'Arial, sans-serif', fontSize: '13px', fontStyle: 'bold', color: '#fff8df', stroke: '#583426', strokeThickness: 2 }).setOrigin(0.5)
     this.snackBagButton.on('pointerdown', (pointer) => {
       pointer.event?.stopPropagation?.()
-      if (this.gameOver) return
+      if (this.gameOver || this.mathQuestion) return
       this.stopQte()
       this.createSnackSelection()
     })
@@ -310,7 +413,6 @@ class ClassroomScene extends Phaser.Scene {
     this.teacherIsWatching = !isWriting
     this.boardText.setText(isWriting ? 'Teacher is writing...' : 'Teacher stopped writing!')
     this.boardText.setColor(isWriting ? '#f6efd1' : '#f3a7a0')
-    this.teacherStateText?.setText(isWriting ? 'Teacher AI: Writing' : 'Teacher AI: Watching')
     if (isWriting) this.startQte()
     else this.stopQte()
   }
@@ -343,6 +445,11 @@ class ClassroomScene extends Phaser.Scene {
     this.student?.setAngle(0)
   }
 
+  getQteDelay(baseDelay) {
+    const speed = 1 + (this.roundElapsed / 60000) * QTE_SPEED_GAIN_PER_MINUTE
+    return baseDelay * Math.max(MIN_QTE_INTERVAL / QTE_INTERVAL, 1 / speed)
+  }
+
   nextQte() {
     if (!this.qteActive || !this.teacherIsWriting || this.gameOver) return
     const choices = QTE_DIRECTIONS.filter(({ name }) => name !== this.qteDirection)
@@ -351,11 +458,11 @@ class ClassroomScene extends Phaser.Scene {
     this.qtePrompt.setText(direction.symbol).setColor('#fff2c7').setVisible(true).setScale(0.65)
     this.tweens.add({ targets: this.qtePrompt, scale: 1, duration: 140, ease: 'Back.easeOut' })
     this.statusText.setText(`Sneak QTE  •  Combo ${this.qteCombo}  •  press ${QTE_KEY_HINTS[direction.name]}`)
-    this.qteTimer = this.time.delayedCall(QTE_INTERVAL, () => this.failQte('Too slow!'))
+    this.qteTimer = this.time.delayedCall(this.getQteDelay(QTE_INTERVAL), () => this.failQte('Too slow!'))
   }
 
   submitQte(direction) {
-    if (this.gameOver) return
+    if (this.gameOver || this.mathQuestion) return
     // In Watching mode the student should stay still. Any directional input is
     // an obvious movement, so the teacher catches them at that moment.
     if (this.teacherIsWatching) {
@@ -373,10 +480,19 @@ class ClassroomScene extends Phaser.Scene {
     const gained = Math.max(1, Math.floor((3 + this.qteCombo ** 1.35) * this.selectedSnack.multiplier))
     this.score += gained
     this.risk = Math.max(0, this.risk - 3)
-    this.scoreText.setText(`Snack Score ${this.score}`)
+    this.scoreText.setText(this.score.toLocaleString())
     this.crumbTimer.paused = false
     this.time.delayedCall(160, () => { if (this.crumbTimer) this.crumbTimer.paused = true })
-    this.tweens.add({ targets: this.student, angle: -5, duration: 90, yoyo: true, ease: 'Sine.easeInOut' })
+    this.tweens.killTweensOf(this.student)
+    this.tweens.add({
+      targets: this.student,
+      angle: { from: -16, to: 16 },
+      duration: 45,
+      yoyo: true,
+      repeat: 1,
+      ease: 'Sine.easeInOut',
+      onComplete: () => this.student.setAngle(0),
+    })
     this.qtePrompt.setColor('#9ee176')
     this.statusText.setText(`Nice! +${gained}  •  Combo ${this.qteCombo}`)
     const level = this.getComboLevel(this.qteCombo)
@@ -384,7 +500,7 @@ class ClassroomScene extends Phaser.Scene {
       this.comboLevel = level.threshold
       this.showComboBubble(level)
     }
-    this.time.delayedCall(250, this.nextQte, [], this)
+    this.time.delayedCall(this.getQteDelay(250), this.nextQte, [], this)
   }
 
   failQte(message) {
@@ -401,7 +517,7 @@ class ClassroomScene extends Phaser.Scene {
       this.catchStudent(true)
       return
     }
-    this.time.delayedCall(420, this.nextQte, [], this)
+    this.time.delayedCall(this.getQteDelay(420), this.nextQte, [], this)
   }
 
   getComboLevel(combo) {
@@ -423,13 +539,27 @@ class ClassroomScene extends Phaser.Scene {
     bubble.add([shape, title, message])
     if (level.bonus) {
       this.score += level.bonus
-      this.scoreText.setText(`Snack Score ${this.score}`)
+      this.scoreText.setText(this.score.toLocaleString())
     }
     this.tweens.add({ targets: bubble, scale: 1, alpha: 1, duration: 180, ease: 'Back.easeOut', yoyo: true, hold: 1250, onComplete: () => bubble.destroy() })
   }
 
   update(_time, delta) {
     if (this.gameOver) return
+    if (this.mathQuestion) {
+      this.mathDrainElapsed += delta
+      const seconds = Math.floor(this.mathDrainElapsed / MATH_SCORE_DRAIN_INTERVAL)
+      if (seconds > 0) {
+        const pointsLost = seconds * this.mathDrainRate + MATH_SCORE_DRAIN_INCREASE * seconds * (seconds - 1) / 2
+        this.mathDrainRate += seconds * MATH_SCORE_DRAIN_INCREASE
+        this.mathDrainElapsed %= MATH_SCORE_DRAIN_INTERVAL
+        this.score = Math.max(0, this.score - pointsLost)
+        this.scoreText.setText(this.score.toLocaleString())
+        this.updateMathStats()
+      }
+      return
+    }
+    this.roundElapsed += delta
     if (!this.qteActive) {
       this.risk = Math.max(0, this.risk - 13 * (delta / 1000))
     }
@@ -439,6 +569,7 @@ class ClassroomScene extends Phaser.Scene {
   catchStudent(force = false) {
     if (this.gameOver || (!this.qteActive && !force)) return
 
+    this.teacher.setTexture('teacher-angry').setAlpha(1).clearTint()
     this.stopQte()
     this.risk = 35
     this.updateRisk()
@@ -452,6 +583,9 @@ class ClassroomScene extends Phaser.Scene {
 
   finishGame() {
     this.gameOver = true
+    this.mathOverlay?.destroy()
+    this.mathOverlay = null
+    this.mathQuestion = null
     this.stopQte()
     this.teacherIsWriting = false
     this.boardText.setText('Class is over!')

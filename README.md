@@ -1,1 +1,1 @@
-# HackCMU---SnackSack
+# Eat-In-Klass
